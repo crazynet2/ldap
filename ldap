@@ -1,0 +1,97 @@
+<?php
+// Parameters for LDAP connection and user generation
+$ldap_server = "ldap://192.168.0.140"; // LDAP server IP address
+$ldap_admin = "crazynet0\\Administrator"; // Administrator username with domain
+$ldap_password = "Admin123"; // Administrator's password
+$ou = "OU=WiFi Users Group,DC=crazynet,DC=local"; // Organizational Unit (OU) target
+
+// Function to generate a random complex password with seven characters
+function generateRandomPassword() {
+    $characters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    $randomPassword = '';
+
+    // Generate a 7-character password
+    for ($i = 0; $i < 7; $i++) {
+        $randomPassword .= $characters[rand(0, strlen($characters) - 1)];
+    }
+
+    return $randomPassword;
+}
+
+// Generate a random user
+$randomUser = "user" . rand(100, 999); // Modify the logic as needed
+$randomPassword = generateRandomPassword();
+
+// Connect to Active Directory
+$ldap_conn = ldap_connect($ldap_server) or die("Unable to connect to LDAP server");
+
+if ($ldap_conn) {
+    // Authenticate with administrator credentials
+    ldap_set_option($ldap_conn, LDAP_OPT_PROTOCOL_VERSION, 3); // Set LDAP version to 3
+    ldap_bind($ldap_conn, $ldap_admin, $ldap_password) or die("LDAP authentication failed");
+
+    // Get the current date in Unix timestamp
+    $now = time();
+
+    // Calculate the account expiration date (one week after creation)
+    $expirationDateInSeconds = $now + (7 * 24 * 60 * 60); // Add a week in seconds (7 days * 24 hours * 60 minutes * 60 seconds)
+
+    if ($expirationDateInSeconds === false) {
+        die("Error calculating the account expiration date.");
+    }
+
+    // Convert the expiration date to FileTime format
+    $expirationDateFileTime = ($expirationDateInSeconds + 11644473600) * 10000000;
+
+    // Define the user suffix
+    $user_suffix = "@crazynet.local";
+
+    // Create an array of user attributes
+    $entry = array(
+        "cn" => $randomUser,
+        "samaccountname" => $randomUser,
+        "objectclass" => "user",
+        "userprincipalname" => $randomUser . $user_suffix, // Add the correct suffix
+        "userpassword" => $randomPassword,
+        "useraccountcontrol" => "544", // Set UF_ACCOUNTDISABLE to 0 to enable the account
+        "pwdlastset" => "-1",
+        "accountExpires" => (string) $expirationDateFileTime, // Set the account expiration date in FileTime format
+    );
+
+    // Add the user to the specified OU in Active Directory
+    $result = ldap_add($ldap_conn, "CN=" . $randomUser . "," . $ou, $entry);
+
+    if ($result) {
+        // Add the user to the "Temporary WIFI Users" group
+        $group_dn = "CN=Temporary WIFI Users," . $ou;
+        $user_dn = "CN=" . $randomUser . "," . $ou;
+        $add_member = array('member' => $user_dn);
+
+        // Add the user to the group
+        $result = ldap_mod_add($ldap_conn, $group_dn, $add_member);
+
+        if ($result) {
+            // Return user data as JSON
+            $userData = array(
+                "newUser" => $randomUser,
+                "newPassword" => $randomPassword,
+                "accountExpiration" => date("d/m/Y", $expirationDateInSeconds) // Format the date as "day month year"
+            );
+            header('Content-Type: application/json');
+            echo json_encode($userData);
+        } else {
+            // Error message for group addition
+            echo "Error adding to the group: " . ldap_error($ldap_conn);
+        }
+    } else {
+        // Error message for user addition
+        echo "Error adding the user: " . ldap_error($ldap_conn);
+    }
+
+    // Close the LDAP connection
+    ldap_close($ldap_conn);
+} else {
+    // Error message for LDAP server connection
+    echo "Unable to connect to the LDAP server.";
+}
+?>
